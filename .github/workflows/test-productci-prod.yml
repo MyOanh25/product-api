@@ -1,5 +1,5 @@
-name: Product CI CD
- 
+name: Product CI Production Test
+
 on:
   push:
     branches:
@@ -8,179 +8,159 @@ on:
     branches:
       - main
   workflow_dispatch:
- 
+
 permissions:
   contents: read
- 
+
 jobs:
   integration-test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
- 
+
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v6
- 
+        uses: actions/checkout@v5
+
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
- 
+
       - name: Install dependencies
         run: npm ci
- 
+
       - name: Check server syntax
         run: node --check server.js
- 
+
       - name: Create environment file
         run: |
           cat > .env <<'EOF'
           PORT=3000
           MONGO_URI=mongodb://nammongodb:27017/productdb
           EOF
- 
+
       - name: Validate Docker Compose
         run: docker compose config
- 
-      - name: Start MongoDB and Product API
+
+      - name: Start Product API and MongoDB
         run: docker compose up -d --build
- 
-      - name: Wait for healthchecks
+
+      - name: Wait for containers to become healthy
         run: |
           echo "Waiting for MongoDB and Product API..."
- 
+
           for i in {1..30}; do
             MONGO_STATUS=$(docker inspect \
               --format='{{.State.Health.Status}}' \
               nammongodb 2>/dev/null || echo "starting")
- 
+
             API_STATUS=$(docker inspect \
               --format='{{.State.Health.Status}}' \
               product-api-container 2>/dev/null || echo "starting")
- 
+
             echo "MongoDB: $MONGO_STATUS | Product API: $API_STATUS"
- 
+
             if [ "$MONGO_STATUS" = "healthy" ] && \
                [ "$API_STATUS" = "healthy" ]; then
-              echo "MongoDB and Product API are healthy."
+              echo "Both containers are healthy."
               exit 0
             fi
- 
+
             sleep 2
           done
- 
-          echo "Healthcheck failed."
+
+          echo "Containers did not become healthy in time."
           docker compose ps
-          docker compose logs
           exit 1
- 
+
       - name: Test health endpoint
         run: |
           RESPONSE=$(curl -sS -f http://localhost:3000/health)
- 
+
           echo "$RESPONSE"
- 
+
           echo "$RESPONSE" | grep -q '"status":"healthy"'
           echo "$RESPONSE" | grep -q '"mongodb":"connected"'
- 
+
       - name: Test CREATE Product
         run: |
           RESPONSE=$(curl -sS -f \
             -X POST http://localhost:3000/api/products \
             -H "Content-Type: application/json" \
             -d '{"pid":"CI001","pname":"CI Product","price":1000,"quantity":5}')
- 
+
           echo "$RESPONSE"
- 
+
           echo "$RESPONSE" | grep -q '"pid":"CI001"'
- 
-      - name: Test READ Product
+          echo "$RESPONSE" | grep -q '"pname":"CI Product"'
+
+      - name: Test READ all Products
+        run: |
+          RESPONSE=$(curl -sS -f \
+            http://localhost:3000/api/products)
+
+          echo "$RESPONSE"
+
+          echo "$RESPONSE" | grep -q '"pid":"CI001"'
+
+      - name: Test READ Product by pid
         run: |
           RESPONSE=$(curl -sS -f \
             http://localhost:3000/api/products/CI001)
- 
+
           echo "$RESPONSE"
- 
+
           echo "$RESPONSE" | grep -q '"pid":"CI001"'
           echo "$RESPONSE" | grep -q '"quantity":5'
- 
+
       - name: Test UPDATE Product
         run: |
           RESPONSE=$(curl -sS -f \
             -X PUT http://localhost:3000/api/products/CI001 \
             -H "Content-Type: application/json" \
             -d '{"pname":"CI Product Updated","price":2000,"quantity":7}')
- 
+
           echo "$RESPONSE"
- 
+
           echo "$RESPONSE" | grep -q '"pname":"CI Product Updated"'
           echo "$RESPONSE" | grep -q '"price":2000'
           echo "$RESPONSE" | grep -q '"quantity":7'
- 
+
       - name: Test DELETE Product
         run: |
           RESPONSE=$(curl -sS -f \
             -X DELETE http://localhost:3000/api/products/CI001)
- 
-          echo "$RESPONSE"
- 
-          echo "$RESPONSE" | grep -q '"message":"Product deleted successfully"'
-      - name: Verify Product deleted
+
+           echo "$RESPONSE"
+
+           echo "$RESPONSE" | grep -q '"message":"Product deleted successfully"'
+
+      - name: Verify Product was deleted
         run: |
           STATUS=$(curl -s \
             -o delete-check.json \
             -w "%{http_code}" \
             http://localhost:3000/api/products/CI001)
- 
+
           cat delete-check.json
- 
+
           if [ "$STATUS" != "404" ]; then
             echo "Expected HTTP 404 but received $STATUS"
             exit 1
           fi
- 
-      - name: Show Docker status
+
+          grep -q '"message":"Product not found"' delete-check.json
+
+      - name: Show Docker Compose status
         if: always()
         run: docker compose ps
- 
+
       - name: Show logs when CI fails
         if: failure()
         run: docker compose logs
- 
-      - name: Cleanup CI containers
+
+      - name: Stop containers
         if: always()
         run: docker compose down -v
- 
-  dockerhub-push:
-    runs-on: ubuntu-latest
- 
-    needs: integration-test
- 
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
- 
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v6
- 
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v4
- 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
- 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/product-api:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/product-api:${{ github.sha }}
-has context menu
-
-
-has context menu
+        
