@@ -132,9 +132,9 @@ jobs:
           RESPONSE=$(curl -sS -f \
             -X DELETE http://localhost:3000/api/products/CI001)
 
-           echo "$RESPONSE"
+          echo "$RESPONSE"
 
-           echo "$RESPONSE" | grep -q '"message":"Product deleted successfully"'
+          echo "$RESPONSE" | grep -q '"message":"Product deleted successfully"'
 
       - name: Verify Product was deleted
         run: |
@@ -163,7 +163,8 @@ jobs:
       - name: Stop containers
         if: always()
         run: docker compose down -v
-        dockerhub-push:
+
+  dockerhub-push:
     runs-on: ubuntu-latest
     needs: integration-test
 
