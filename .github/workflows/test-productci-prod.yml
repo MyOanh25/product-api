@@ -155,7 +155,6 @@ jobs:
 
   dockerhub-push:
     runs-on: ubuntu-latest
-
     needs: integration-test
 
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -178,6 +177,105 @@ jobs:
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/product-api:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/product-api:${{ github.sha }}
+
+  deploy-local:
+    runs-on:
+      - self-hosted
+      - macOS
+
+    needs:
+      - integration-test
+      - dockerhub-push
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+
+      - name: Create production environment file
+        run: |
+          cat > .env <<'EOF'
+          PORT=3000
+          MONGO_URI=mongodb://nammongodb:27017/productdb
+          EOF
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Validate production Docker Compose
+        run: docker compose -f docker-compose-prod.yaml config
+
+      - name: Pull latest production image
+        run: docker compose -f docker-compose-prod.yaml pull
+
+      - name: Deploy to local Docker Engine
+        run: docker compose -f docker-compose-prod.yaml up -d
+
+      - name: Wait for local healthchecks
+        run: |
+          echo "Waiting for local deployment..."
+
+          for i in {1..30}; do
+            MONGO_STATUS=$(docker inspect \
+              --format='{{.State.Health.Status}}' \
+              nammongodb 2>/dev/null || echo "starting")
+
+            API_STATUS=$(docker inspect \
+              --format='{{.State.Health.Status}}' \
+              product-api-container 2>/dev/null || echo "starting")
+
+            echo "MongoDB: $MONGO_STATUS | Product API: $API_STATUS"
+
+            if [ "$MONGO_STATUS" = "healthy" ] && \
+               [ "$API_STATUS" = "healthy" ]; then
+              echo "Local deployment is healthy."
+              exit 0
+            fi
+
+            sleep 2
+          done
+
+          echo "Local deployment healthcheck failed."
+          docker compose -f docker-compose-prod.yaml ps
+          docker compose -f docker-compose-prod.yaml logs
+          exit 1
+
+      - name: Verify deployed image
+        run: |
+          IMAGE=$(docker inspect \
+            product-api-container \
+            --format='{{.Config.Image}}')
+
+          echo "Running image: $IMAGE"
+
+          EXPECTED_IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/product-api:latest"
+
+          if [ "$IMAGE" != "$EXPECTED_IMAGE" ]; then
+            echo "Unexpected production image."
+            exit 1
+          fi
+
+      - name: Test local health endpoint
+        run: |
+          RESPONSE=$(curl -sS -f http://localhost:3000/health)
+
+          echo "$RESPONSE"
+
+          echo "$RESPONSE" | grep -q '"status":"healthy"'
+          echo "$RESPONSE" | grep -q '"mongodb":"connected"'
+
+      - name: Show production status
+        if: always()
+        run: docker compose -f docker-compose-prod.yaml ps
+
+      - name: Show production logs when deployment fails
+        if: failure()
+        run: docker compose -f docker-compose-prod.yaml logs
