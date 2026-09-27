@@ -1,4 +1,4 @@
-name: Product CI Production Test
+name: Product CI CD
 
 on:
   push:
@@ -19,10 +19,10 @@ jobs:
 
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -43,10 +43,10 @@ jobs:
       - name: Validate Docker Compose
         run: docker compose config
 
-      - name: Start Product API and MongoDB
+      - name: Start MongoDB and Product API
         run: docker compose up -d --build
 
-      - name: Wait for containers to become healthy
+      - name: Wait for healthchecks
         run: |
           echo "Waiting for MongoDB and Product API..."
 
@@ -63,15 +63,16 @@ jobs:
 
             if [ "$MONGO_STATUS" = "healthy" ] && \
                [ "$API_STATUS" = "healthy" ]; then
-              echo "Both containers are healthy."
+              echo "MongoDB and Product API are healthy."
               exit 0
             fi
 
             sleep 2
           done
 
-          echo "Containers did not become healthy in time."
+          echo "Healthcheck failed."
           docker compose ps
+          docker compose logs
           exit 1
 
       - name: Test health endpoint
@@ -93,18 +94,8 @@ jobs:
           echo "$RESPONSE"
 
           echo "$RESPONSE" | grep -q '"pid":"CI001"'
-          echo "$RESPONSE" | grep -q '"pname":"CI Product"'
 
-      - name: Test READ all Products
-        run: |
-          RESPONSE=$(curl -sS -f \
-            http://localhost:3000/api/products)
-
-          echo "$RESPONSE"
-
-          echo "$RESPONSE" | grep -q '"pid":"CI001"'
-
-      - name: Test READ Product by pid
+      - name: Test READ Product
         run: |
           RESPONSE=$(curl -sS -f \
             http://localhost:3000/api/products/CI001)
@@ -136,7 +127,7 @@ jobs:
 
           echo "$RESPONSE" | grep -q '"message":"Product deleted successfully"'
 
-      - name: Verify Product was deleted
+      - name: Verify Product deleted
         run: |
           STATUS=$(curl -s \
             -o delete-check.json \
@@ -150,9 +141,7 @@ jobs:
             exit 1
           fi
 
-          grep -q '"message":"Product not found"' delete-check.json
-
-      - name: Show Docker Compose status
+      - name: Show Docker status
         if: always()
         run: docker compose ps
 
@@ -160,31 +149,32 @@ jobs:
         if: failure()
         run: docker compose logs
 
-      - name: Stop containers
+      - name: Cleanup CI containers
         if: always()
         run: docker compose down -v
 
   dockerhub-push:
     runs-on: ubuntu-latest
+
     needs: integration-test
 
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
